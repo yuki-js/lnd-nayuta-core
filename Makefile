@@ -56,7 +56,7 @@ DEV_TAGS := $(if ${tags},$(DEV_TAGS) ${tags},$(DEV_TAGS))
 # We only return the part inside the double quote here to avoid escape issues
 # when calling the external release script. The second parameter can be used to
 # add additional ldflags if needed (currently only used for the release).
-make_ldflags = $(2) -X $(PKG)/build.Commit=$(COMMIT) \
+make_ldflags = $(2) -w -X $(PKG)/build.Commit=$(COMMIT) \
 	-X $(PKG)/build.CommitHash=$(COMMIT_HASH) \
 	-X $(PKG)/build.GoVersion=$(GOVERSION) \
 	-X $(PKG)/build.RawTags=$(shell echo $(1) | sed -e 's/ /,/g')
