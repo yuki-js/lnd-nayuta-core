@@ -27,12 +27,14 @@ import (
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/discovery"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/htlcswitch/hodl"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -93,8 +95,8 @@ const (
 	defaultHostSampleInterval = time.Minute * 5
 
 	defaultChainInterval = time.Minute
-	defaultChainTimeout  = time.Second * 10
-	defaultChainBackoff  = time.Second * 30
+	defaultChainTimeout  = time.Second * 30
+	defaultChainBackoff  = time.Minute * 2
 	defaultChainAttempts = 3
 
 	// Set defaults for a health check which ensures that we have space
@@ -236,7 +238,7 @@ type Config struct {
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
 	BackupFilePath     string `long:"backupfilepath" description:"The target location of the channel backup file"`
 
-	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network."`
+	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet."`
 
 	Bitcoin      *lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
 	BtcdMode     *lncfg.Btcd     `group:"btcd" namespace:"btcd"`
@@ -288,6 +290,8 @@ type Config struct {
 	MaxOutgoingCltvExpiry uint32 `long:"max-cltv-expiry" description:"The maximum number of blocks funds could be locked up for when forwarding payments."`
 
 	MaxChannelFeeAllocation float64 `long:"max-channel-fee-allocation" description:"The maximum percentage of total funds that can be allocated to a channel's commitment fee. This only applies for the initiator of the channel. Valid values are within [0.1, 1]."`
+
+	MaxCommitFeeRateAnchors uint64 `long:"max-commit-fee-rate-anchors" description:"The maximum fee rate in sat/vbyte that will be used for commitments of channels of the anchors type. Must be large enough to ensure transaction propagation"`
 
 	DryRunMigration bool `long:"dry-run-migration" description:"If true, lnd will abort committing a migration if it would otherwise have been successful. This leaves the database unmodified, and still compatible with the previously active version of lnd."`
 
@@ -410,7 +414,7 @@ func DefaultConfig() Config {
 		Autopilot: &lncfg.AutoPilot{
 			MaxChannels:    5,
 			Allocation:     0.6,
-			MinChannelSize: int64(minChanFundingSize),
+			MinChannelSize: int64(funding.MinChanFundingSize),
 			MaxChannelSize: int64(MaxFundingAmount),
 			MinConfs:       1,
 			ConfTarget:     autopilot.DefaultConfTarget,
@@ -426,7 +430,7 @@ func DefaultConfig() Config {
 		HeightHintCacheQueryDisable:   defaultHeightHintCacheQueryDisable,
 		Alias:                         defaultAlias,
 		Color:                         defaultColor,
-		MinChanSize:                   int64(minChanFundingSize),
+		MinChanSize:                   int64(funding.MinChanFundingSize),
 		MaxChanSize:                   int64(0),
 		DefaultRemoteMaxHtlcs:         defaultRemoteMaxHtlcs,
 		NumGraphSyncPeers:             defaultMinPeers,
@@ -475,6 +479,7 @@ func DefaultConfig() Config {
 		},
 		MaxOutgoingCltvExpiry:   htlcswitch.DefaultMaxOutgoingCltvExpiry,
 		MaxChannelFeeAllocation: htlcswitch.DefaultMaxLinkFeeAllocation,
+		MaxCommitFeeRateAnchors: lnwallet.DefaultAnchorsCommitMaxFeeRateSatPerVByte,
 		LogWriter:               build.NewRotatingLogWriter(),
 		DB:                      lncfg.DefaultDB(),
 		registeredChains:        chainreg.NewChainRegistry(),
@@ -685,8 +690,8 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 	// Ensure that the specified values for the min and max channel size
 	// are within the bounds of the normal chan size constraints.
-	if cfg.Autopilot.MinChannelSize < int64(minChanFundingSize) {
-		cfg.Autopilot.MinChannelSize = int64(minChanFundingSize)
+	if cfg.Autopilot.MinChannelSize < int64(funding.MinChanFundingSize) {
+		cfg.Autopilot.MinChannelSize = int64(funding.MinChanFundingSize)
 	}
 	if cfg.Autopilot.MaxChannelSize > int64(MaxFundingAmount) {
 		cfg.Autopilot.MaxChannelSize = int64(MaxFundingAmount)
@@ -703,9 +708,9 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 	// If unset (marked by 0 value), then enforce proper default.
 	if cfg.MaxChanSize == 0 {
 		if cfg.ProtocolOptions.Wumbo() {
-			cfg.MaxChanSize = int64(MaxBtcFundingAmountWumbo)
+			cfg.MaxChanSize = int64(funding.MaxBtcFundingAmountWumbo)
 		} else {
-			cfg.MaxChanSize = int64(MaxBtcFundingAmount)
+			cfg.MaxChanSize = int64(funding.MaxBtcFundingAmount)
 		}
 	}
 
@@ -733,6 +738,12 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 		return nil, fmt.Errorf("invalid max channel fee allocation: "+
 			"%v, must be within (0, 1]",
 			cfg.MaxChannelFeeAllocation)
+	}
+
+	if cfg.MaxCommitFeeRateAnchors < 1 {
+		return nil, fmt.Errorf("invalid max commit fee rate anchors: "+
+			"%v, must be at least 1 sat/vbyte",
+			cfg.MaxCommitFeeRateAnchors)
 	}
 
 	// Validate the Tor config parameters.
@@ -847,7 +858,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 			"litecoin.active must be set to 1 (true)", funcName)
 
 	case cfg.Litecoin.Active:
-		err := cfg.Litecoin.Validate(minTimeLockDelta, minLtcRemoteDelay)
+		err := cfg.Litecoin.Validate(minTimeLockDelta, funding.MinLtcRemoteDelay)
 		if err != nil {
 			return nil, err
 		}
@@ -931,7 +942,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 		// Finally we'll register the litecoin chain as our current
 		// primary chain.
 		cfg.registeredChains.RegisterPrimaryChain(chainreg.LitecoinChain)
-		MaxFundingAmount = maxLtcFundingAmount
+		MaxFundingAmount = funding.MaxLtcFundingAmount
 
 	case cfg.Bitcoin.Active:
 		// Multiple networks can't be selected simultaneously.  Count
@@ -972,7 +983,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 			return nil, err
 		}
 
-		err := cfg.Bitcoin.Validate(minTimeLockDelta, minBtcRemoteDelay)
+		err := cfg.Bitcoin.Validate(minTimeLockDelta, funding.MinBtcRemoteDelay)
 		if err != nil {
 			return nil, err
 		}
@@ -1050,8 +1061,8 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 	// Ensure that the specified values for the min and max channel size
 	// don't are within the bounds of the normal chan size constraints.
-	if cfg.Autopilot.MinChannelSize < int64(minChanFundingSize) {
-		cfg.Autopilot.MinChannelSize = int64(minChanFundingSize)
+	if cfg.Autopilot.MinChannelSize < int64(funding.MinChanFundingSize) {
+		cfg.Autopilot.MinChannelSize = int64(funding.MinChanFundingSize)
 	}
 	if cfg.Autopilot.MaxChannelSize > int64(MaxFundingAmount) {
 		cfg.Autopilot.MaxChannelSize = int64(MaxFundingAmount)

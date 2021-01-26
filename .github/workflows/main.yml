@@ -18,6 +18,13 @@ env:
   GOPATH: /home/runner/work/go
   DOWNLOAD_CACHE: /home/runner/work/download_cache
   BITCOIN_VERSION: 0.20.1
+
+  # If you change this value, please change it in the following files as well:
+  # /.travis.yml
+  # /Dockerfile
+  # /dev.Dockerfile
+  # /make/builder.Dockerfile
+  # /.github/workflows/release.yml
   GO_VERSION: 1.15.6
 
 jobs:
@@ -290,3 +297,24 @@ jobs:
         with:
           path-to-profile: coverage.txt
           parallel: true
+
+  ########################
+  # check pinned dependencies
+  ########################
+  dep-pin:
+    name: check pinned dependencies
+    runs-on: ubuntu-latest
+    strategy:
+      # Allow other tests in the matrix to continue if one fails.
+      fail-fast: false
+      matrix:
+        pinned_dep:
+          - google.golang.org/grpc v1.24.0
+          - github.com/golang/protobuf v1.3.2
+
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v2
+
+      - name: ensure dependences at correct version
+        run:   if ! grep -q "${{ matrix.pinned_dep }}" go.mod; then echo dependency ${{ matrix.pinned_dep }} should not be altered ; exit 1 ; fi

@@ -42,6 +42,7 @@ import (
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/discovery"
 	"github.com/lightningnetwork/lnd/feature"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/input"
@@ -1055,7 +1056,25 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 		return nil, err
 	}
 
-	tx, err := r.server.cc.Wallet.SendOutputs(outputs, feeRate, minconf, label)
+	// We first do a dry run, to sanity check we won't spend our wallet
+	// balance below the reserved amount.
+	authoredTx, err := r.server.cc.Wallet.CreateSimpleTx(
+		outputs, feeRate, true,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = r.server.cc.Wallet.CheckReservedValueTx(authoredTx.Tx)
+	if err != nil {
+		return nil, err
+	}
+
+	// If that checks out, we're failry confident that creating sending to
+	// these outputs will keep the wallet balance above the reserve.
+	tx, err := r.server.cc.Wallet.SendOutputs(
+		outputs, feeRate, minconf, label,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1252,14 +1271,85 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		// With the sweeper instance created, we can now generate a
 		// transaction that will sweep ALL outputs from the wallet in a
 		// single transaction. This will be generated in a concurrent
-		// safe manner, so no need to worry about locking.
+		// safe manner, so no need to worry about locking. The tx will
+		// pay to the change address created above if we needed to
+		// reserve any value, the rest will go to targetAddr.
 		sweepTxPkg, err := sweep.CraftSweepAllTx(
 			feePerKw, lnwallet.DefaultDustLimit(),
-			uint32(bestHeight), targetAddr, wallet,
+			uint32(bestHeight), nil, targetAddr, wallet,
 			wallet.WalletController, wallet.WalletController,
 			r.server.cc.FeeEstimator, r.server.cc.Signer,
 		)
 		if err != nil {
+			return nil, err
+		}
+
+		// Before we publish the transaction we make sure it won't
+		// violate our reserved wallet value.
+		var reservedVal btcutil.Amount
+		err = wallet.WithCoinSelectLock(func() error {
+			var err error
+			reservedVal, err = wallet.CheckReservedValueTx(
+				sweepTxPkg.SweepTx,
+			)
+			return err
+		})
+
+		// If sending everything to this address would invalidate our
+		// reserved wallet balance, we create a new sweep tx, where
+		// we'll send the reserved value back to our wallet.
+		if err == lnwallet.ErrReservedValueInvalidated {
+			sweepTxPkg.CancelSweepAttempt()
+
+			rpcsLog.Debugf("Reserved value %v not satisfied after "+
+				"send_all, trying with change output",
+				reservedVal)
+
+			// We'll request a change address from the wallet,
+			// where we'll send this reserved value back to. This
+			// ensures this is an address the wallet knows about,
+			// allowing us to pass the reserved value check.
+			changeAddr, err := r.server.cc.Wallet.NewAddress(
+				lnwallet.WitnessPubKey, true,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			// Send the reserved value to this change address, the
+			// remaining funds will go to the targetAddr.
+			outputs := []sweep.DeliveryAddr{
+				{
+					Addr: changeAddr,
+					Amt:  reservedVal,
+				},
+			}
+
+			sweepTxPkg, err = sweep.CraftSweepAllTx(
+				feePerKw, lnwallet.DefaultDustLimit(),
+				uint32(bestHeight), outputs, targetAddr, wallet,
+				wallet.WalletController, wallet.WalletController,
+				r.server.cc.FeeEstimator, r.server.cc.Signer,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			// Sanity check the new tx by re-doing the check.
+			err = wallet.WithCoinSelectLock(func() error {
+				_, err := wallet.CheckReservedValueTx(
+					sweepTxPkg.SweepTx,
+				)
+				return err
+			})
+			if err != nil {
+				sweepTxPkg.CancelSweepAttempt()
+
+				return nil, err
+			}
+		} else if err != nil {
+			sweepTxPkg.CancelSweepAttempt()
+
 			return nil, err
 		}
 
@@ -1760,11 +1850,11 @@ func (r *rpcServer) canOpenChannel() error {
 	return nil
 }
 
-// praseOpenChannelReq parses an OpenChannelRequest message into the server's
-// native openChanReq struct. The logic is abstracted so that it can be shared
-// between OpenChannel and OpenChannelSync.
+// praseOpenChannelReq parses an OpenChannelRequest message into an InitFundingMsg
+// struct. The logic is abstracted so that it can be shared between OpenChannel
+// and OpenChannelSync.
 func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
-	isSync bool) (*openChanReq, error) {
+	isSync bool) (*funding.InitFundingMsg, error) {
 
 	rpcsLog.Debugf("[openchannel] request to NodeKey(%x) "+
 		"allocation(us=%v, them=%v)", in.NodePubkey,
@@ -1803,9 +1893,9 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// Restrict the size of the channel we'll actually open. At a later
 	// level, we'll ensure that the output we create after accounting for
 	// fees that a dust output isn't created.
-	if localFundingAmt < minChanFundingSize {
+	if localFundingAmt < funding.MinChanFundingSize {
 		return nil, fmt.Errorf("channel is too small, the minimum "+
-			"channel size is: %v SAT", int64(minChanFundingSize))
+			"channel size is: %v SAT", int64(funding.MinChanFundingSize))
 	}
 
 	// Prevent users from submitting a max-htlc value that would exceed the
@@ -1891,20 +1981,20 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// Instruct the server to trigger the necessary events to attempt to
 	// open a new channel. A stream is returned in place, this stream will
 	// be used to consume updates of the state of the pending channel.
-	return &openChanReq{
-		targetPubkey:     nodePubKey,
-		chainHash:        *r.cfg.ActiveNetParams.GenesisHash,
-		localFundingAmt:  localFundingAmt,
-		pushAmt:          lnwire.NewMSatFromSatoshis(remoteInitialBalance),
-		minHtlcIn:        minHtlcIn,
-		fundingFeePerKw:  feeRate,
-		private:          in.Private,
-		remoteCsvDelay:   remoteCsvDelay,
-		minConfs:         minConfs,
-		shutdownScript:   script,
-		maxValueInFlight: maxValue,
-		maxHtlcs:         maxHtlcs,
-		maxLocalCsv:      uint16(in.MaxLocalCsv),
+	return &funding.InitFundingMsg{
+		TargetPubkey:     nodePubKey,
+		ChainHash:        *r.cfg.ActiveNetParams.GenesisHash,
+		LocalFundingAmt:  localFundingAmt,
+		PushAmt:          lnwire.NewMSatFromSatoshis(remoteInitialBalance),
+		MinHtlcIn:        minHtlcIn,
+		FundingFeePerKw:  feeRate,
+		Private:          in.Private,
+		RemoteCsvDelay:   remoteCsvDelay,
+		MinConfs:         minConfs,
+		ShutdownScript:   script,
+		MaxValueInFlight: maxValue,
+		MaxHtlcs:         maxHtlcs,
+		MaxLocalCsv:      uint16(in.MaxLocalCsv),
 	}, nil
 }
 
@@ -1935,8 +2025,8 @@ func (r *rpcServer) OpenChannel(in *lnrpc.OpenChannelRequest,
 			// Map the channel point shim into a new
 			// chanfunding.CannedAssembler that the wallet will use
 			// to obtain the channel point details.
-			copy(req.pendingChanID[:], chanPointShim.PendingChanId)
-			req.chanFunder, err = newFundingShimAssembler(
+			copy(req.PendingChanID[:], chanPointShim.PendingChanId)
+			req.ChanFunder, err = newFundingShimAssembler(
 				chanPointShim, true, r.server.cc.KeyRing,
 			)
 			if err != nil {
@@ -1953,9 +2043,9 @@ func (r *rpcServer) OpenChannel(in *lnrpc.OpenChannelRequest,
 			// Instruct the wallet to use the new
 			// chanfunding.PsbtAssembler to construct the funding
 			// transaction.
-			copy(req.pendingChanID[:], psbtShim.PendingChanId)
-			req.chanFunder, err = newPsbtAssembler(
-				in, req.minConfs, psbtShim,
+			copy(req.PendingChanID[:], psbtShim.PendingChanId)
+			req.ChanFunder, err = newPsbtAssembler(
+				in, req.MinConfs, psbtShim,
 				&r.server.cc.Wallet.Cfg.NetParams,
 			)
 			if err != nil {
@@ -1972,7 +2062,7 @@ out:
 		select {
 		case err := <-errChan:
 			rpcsLog.Errorf("unable to open channel to NodeKey(%x): %v",
-				req.targetPubkey.SerializeCompressed(), err)
+				req.TargetPubkey.SerializeCompressed(), err)
 			return err
 		case fundingUpdate := <-updateChan:
 			rpcsLog.Tracef("[openchannel] sending update: %v",
@@ -2004,7 +2094,7 @@ out:
 	}
 
 	rpcsLog.Tracef("[openchannel] success NodeKey(%x), ChannelPoint(%v)",
-		req.targetPubkey.SerializeCompressed(), outpoint)
+		req.TargetPubkey.SerializeCompressed(), outpoint)
 	return nil
 }
 
@@ -2029,7 +2119,7 @@ func (r *rpcServer) OpenChannelSync(ctx context.Context,
 	// If an error occurs them immediately return the error to the client.
 	case err := <-errChan:
 		rpcsLog.Errorf("unable to open channel to NodeKey(%x): %v",
-			req.targetPubkey.SerializeCompressed(), err)
+			req.TargetPubkey.SerializeCompressed(), err)
 		return nil, err
 
 	// Otherwise, wait for the first channel update. The first update sent
@@ -2864,7 +2954,7 @@ func (r *rpcServer) ChannelBalance(ctx context.Context,
 
 	rpcsLog.Debugf("[channelbalance] local_balance=%v remote_balance=%v "+
 		"unsettled_local_balance=%v unsettled_remote_balance=%v "+
-		"pending_open_local_balance=%v pending_open_remove_balance",
+		"pending_open_local_balance=%v pending_open_remote_balance=%v",
 		localBalance, remoteBalance, unsettledLocalBalance,
 		unsettledRemoteBalance, pendingOpenLocalBalance,
 		pendingOpenRemoteBalance)
