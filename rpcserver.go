@@ -1988,7 +1988,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 		PushAmt:          lnwire.NewMSatFromSatoshis(remoteInitialBalance),
 		MinHtlcIn:        minHtlcIn,
 		FundingFeePerKw:  feeRate,
-		Private:          in.Private,
+		Private:          true, // changed in.Private to true in order to force using private channel
 		RemoteCsvDelay:   remoteCsvDelay,
 		MinConfs:         minConfs,
 		ShutdownScript:   script,
