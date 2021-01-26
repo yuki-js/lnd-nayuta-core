@@ -19,6 +19,7 @@ jobs:
         with:
           ref: master
           fetch-depth: 0
+          token: ${{ secrets.SECRET_WORKFLOW_TRIGGER }}
           # submodules: 'recursive'     ### may be needed in your situation
       - name: Set author info
         run: |
