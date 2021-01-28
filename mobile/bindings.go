@@ -41,8 +41,12 @@ func exit(status int32, message string, exitNotifier ExitCallback) {
 	running = 0
 	exitNotifier.OnExit(status, message)
 }
-func IsRunning() int32 {
-	return running
+func IsRunning() bool {
+	if running == 1 {
+		return true
+	} else {
+		return false
+	}
 }
 func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) {
 	if !atomic.CompareAndSwapInt32(&running, 0, 1) {
