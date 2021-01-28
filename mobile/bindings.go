@@ -90,6 +90,7 @@ func Start(extraArgs string, unlockerReady, exitNotifier Callback) {
 			exitNotifier.OnResponse([]byte(err.Error()))
 			return
 		}
+		exitNotifier.OnResponse([]byte{})
 	}()
 
 	// Finally we start two go routines that will call the provided
