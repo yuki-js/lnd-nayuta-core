@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	flags "github.com/jessevdk/go-flags"
 	"github.com/lightningnetwork/lnd"
@@ -25,7 +26,30 @@ import (
 // NOTE: On mobile platforms the '--lnddir` argument should be set to the
 // current app directory in order to ensure lnd has the permissions needed to
 // write to it.
-func Start(extraArgs string, unlockerReady, exitNotifier Callback) {
+var (
+	// running is used to check not only running but also stopped
+	// this is because there is chance that mobile(JS) context pause/die
+	// while Go's context stay alive
+	running int32
+)
+
+type ExitCallback interface {
+	OnExit(status int32, message string)
+}
+
+func exit(status int32, message string, exitNotifier ExitCallback) {
+	running = 0
+	exitNotifier.OnExit(status, message)
+}
+func IsRunning() int32 {
+	return running
+}
+func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) {
+	if !atomic.CompareAndSwapInt32(&running, 0, 1) {
+		exit(1, "already running", exitNotifier)
+		return
+	}
+
 	// Split the argument string on "--" to get separated command line
 	// arguments.
 	var splitArgs []string
@@ -50,15 +74,14 @@ func Start(extraArgs string, unlockerReady, exitNotifier Callback) {
 	loadedConfig, err := lnd.LoadConfig()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		exitNotifier.OnResponse([]byte(err.Error()))
+		exit(1, err.Error(), exitNotifier)
 		return
 	}
 
 	// Hook interceptor for os signals.
 	if err := signal.Intercept(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		exitNotifier.OnResponse([]byte(err.Error()))
-		return
+		// intentionally ignoring error: signal's own mech to prevent duplication conflicts
 	}
 
 	// Set up channels that will be notified when the RPC servers are ready
@@ -87,10 +110,10 @@ func Start(extraArgs string, unlockerReady, exitNotifier Callback) {
 			} else {
 				fmt.Fprintln(os.Stderr, err)
 			}
-			exitNotifier.OnResponse([]byte(err.Error()))
+			exit(1, err.Error(), exitNotifier)
 			return
 		}
-		exitNotifier.OnResponse([]byte{})
+		exit(0, "", exitNotifier)
 	}()
 
 	// Finally we start two go routines that will call the provided
