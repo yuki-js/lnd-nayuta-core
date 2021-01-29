@@ -37,10 +37,6 @@ type ExitCallback interface {
 	OnExit(status int32, message string)
 }
 
-func exit(status int32, message string, exitNotifier ExitCallback) {
-	running = 0
-	exitNotifier.OnExit(status, message)
-}
 func IsRunning() bool {
 	if running == 1 {
 		return true
@@ -49,8 +45,13 @@ func IsRunning() bool {
 	}
 }
 func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) {
+	exit := func(status int32, message string) {
+		running = 0
+		exitNotifier.OnExit(status, message)
+	}
+
 	if !atomic.CompareAndSwapInt32(&running, 0, 1) {
-		exit(1, "already running", exitNotifier)
+		exit(1, "already running")
 		return
 	}
 
@@ -78,7 +79,7 @@ func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) 
 	loadedConfig, err := lnd.LoadConfig()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		exit(1, err.Error(), exitNotifier)
+		exit(1, err.Error())
 		return
 	}
 
@@ -114,10 +115,10 @@ func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) 
 			} else {
 				fmt.Fprintln(os.Stderr, err)
 			}
-			exit(1, err.Error(), exitNotifier)
+			exit(1, err.Error())
 			return
 		}
-		exit(0, "", exitNotifier)
+		exit(0, "")
 	}()
 
 	// Finally we start two go routines that will call the provided
