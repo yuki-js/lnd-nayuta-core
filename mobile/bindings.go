@@ -44,6 +44,14 @@ func IsRunning() bool {
 		return false
 	}
 }
+
+// RequestShutdown initiates a shutdown
+// Use when killing walletUnlocker or force leaving Main()
+// When killing RPC you'd be better to use /v1/stop instead
+func RequestShutdown() {
+	signal.RequestShutdown()
+}
+
 func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) {
 	exit := func(status int32, message string) {
 		running = 0
