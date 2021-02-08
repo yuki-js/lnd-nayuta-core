@@ -1,0 +1,33 @@
+name: Sync to upstream
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+    # scheduled at 07:00 every Monday and Thursday
+
+  workflow_dispatch: # click the button on Github repo!
+
+jobs:
+  sync_with_upstream:
+    runs-on: ubuntu-latest
+    name: Sync master with upstream latest
+
+    steps:
+      # Step 1: run a standard checkout action, provided by github
+      - name: Checkout master
+        uses: actions/checkout@v2
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.SECRET_WORKFLOW_TRIGGER }}
+          # submodules: 'recursive'     ### may be needed in your situation
+      - name: Set author info
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: merge upstream & push to origin
+        run: |
+          git remote add upstream "https://github.com/lightningnetwork/lnd.git"
+          git fetch upstream master
+          git pull --no-edit --log --ff upstream master
+          git push origin master

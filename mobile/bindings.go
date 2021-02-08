@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	flags "github.com/jessevdk/go-flags"
 	"github.com/lightningnetwork/lnd"
@@ -25,7 +26,43 @@ import (
 // NOTE: On mobile platforms the '--lnddir` argument should be set to the
 // current app directory in order to ensure lnd has the permissions needed to
 // write to it.
-func Start(extraArgs string, unlockerReady, rpcReady Callback) {
+var (
+	// running is used to check not only running but also stopped
+	// this is because there is chance that mobile(JS) context pause/die
+	// while Go's context stay alive
+	running int32
+)
+
+type ExitCallback interface {
+	OnExit(status int32, message string)
+}
+
+func IsRunning() bool {
+	if running == 1 {
+		return true
+	} else {
+		return false
+	}
+}
+
+// RequestShutdown initiates a shutdown
+// Use when killing walletUnlocker or force leaving Main()
+// When killing RPC you'd be better to use /v1/stop instead
+func RequestShutdown() {
+	signal.RequestShutdown()
+}
+
+func Start(extraArgs string, unlockerReady Callback, exitNotifier ExitCallback) {
+	exit := func(status int32, message string) {
+		running = 0
+		exitNotifier.OnExit(status, message)
+	}
+
+	if !atomic.CompareAndSwapInt32(&running, 0, 1) {
+		exit(1, "already running")
+		return
+	}
+
 	// Split the argument string on "--" to get separated command line
 	// arguments.
 	var splitArgs []string
@@ -50,20 +87,20 @@ func Start(extraArgs string, unlockerReady, rpcReady Callback) {
 	loadedConfig, err := lnd.LoadConfig()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		exit(1, err.Error())
+		return
 	}
 
 	// Hook interceptor for os signals.
 	if err := signal.Intercept(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		// intentionally ignoring error: signal's own mech to prevent duplication conflicts
 	}
 
 	// Set up channels that will be notified when the RPC servers are ready
 	// to accept calls.
 	var (
 		unlockerListening = make(chan struct{})
-		rpcListening      = make(chan struct{})
 	)
 
 	// We call the main method with the custom in-memory listeners called
@@ -72,10 +109,6 @@ func Start(extraArgs string, unlockerReady, rpcReady Callback) {
 		WalletUnlocker: &lnd.ListenerWithSignal{
 			Listener: walletUnlockerLis,
 			Ready:    unlockerListening,
-		},
-		RPCListener: &lnd.ListenerWithSignal{
-			Listener: lightningLis,
-			Ready:    rpcListening,
 		},
 	}
 
@@ -90,8 +123,10 @@ func Start(extraArgs string, unlockerReady, rpcReady Callback) {
 			} else {
 				fmt.Fprintln(os.Stderr, err)
 			}
-			os.Exit(1)
+			exit(1, err.Error())
+			return
 		}
+		exit(0, "")
 	}()
 
 	// Finally we start two go routines that will call the provided
@@ -111,23 +146,5 @@ func Start(extraArgs string, unlockerReady, rpcReady Callback) {
 		addWalletUnlockerLisDialOption(auth...)
 
 		unlockerReady.OnResponse([]byte{})
-	}()
-
-	go func() {
-		<-rpcListening
-
-		// Now that the RPC server is ready, we can get the needed
-		// authentication options, and add them to the global dial
-		// options.
-		auth, err := lnd.AdminAuthOptions(loadedConfig)
-		if err != nil {
-			rpcReady.OnError(err)
-			return
-		}
-
-		// Add the auth options to the listener's dial options.
-		addLightningLisDialOption(auth...)
-
-		rpcReady.OnResponse([]byte{})
 	}()
 }

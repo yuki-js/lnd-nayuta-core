@@ -1761,7 +1761,7 @@ func (r *rpcServer) canOpenChannel() error {
 // between OpenChannel and OpenChannelSync.
 func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	isSync bool) (*openChanReq, error) {
-
+	in.Private = true
 	rpcsLog.Debugf("[openchannel] request to NodeKey(%x) "+
 		"allocation(us=%v, them=%v)", in.NodePubkey,
 		in.LocalFundingAmount, in.PushSat)
