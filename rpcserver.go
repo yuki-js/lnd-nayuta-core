@@ -4722,7 +4722,7 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 // unique payment preimage.
 func (r *rpcServer) AddInvoice(ctx context.Context,
 	invoice *lnrpc.Invoice) (*lnrpc.AddInvoiceResponse, error) {
-
+	invoice.Private = true
 	defaultDelta := r.cfg.Bitcoin.TimeLockDelta
 	if r.cfg.registeredChains.PrimaryChain() == chainreg.LitecoinChain {
 		defaultDelta = r.cfg.Litecoin.TimeLockDelta
