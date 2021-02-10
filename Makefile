@@ -6,6 +6,7 @@ BTCD_PKG := github.com/btcsuite/btcd
 GOVERALLS_PKG := github.com/mattn/goveralls
 LINT_PKG := github.com/golangci/golangci-lint/cmd/golangci-lint
 GOACC_PKG := github.com/ory/go-acc
+FALAFEL_PKG := github.com/lightninglabs/falafel
 GOIMPORTS_PKG := golang.org/x/tools/cmd/goimports
 GOFUZZ_BUILD_PKG := github.com/dvyukov/go-fuzz/go-fuzz-build
 GOFUZZ_PKG := github.com/dvyukov/go-fuzz/go-fuzz
@@ -36,6 +37,7 @@ BTCD_COMMIT := $(shell cat go.mod | \
 
 LINT_COMMIT := v1.18.0
 GOACC_COMMIT := ddc355013f90fea78d83d3a6c71f1d37ac07ecd5
+FALAFEL_COMMIT := v0.7.1
 GOFUZZ_COMMIT := 21309f307f61
 
 DEPGET := cd /tmp && GO111MODULE=on go get -v
@@ -110,6 +112,10 @@ $(GOACC_BIN):
 btcd:
 	@$(call print, "Installing btcd.")
 	$(DEPGET) $(BTCD_PKG)@$(BTCD_COMMIT)
+
+falafel:
+	@$(call print, "Installing falafel.")
+	$(DEPGET) $(FALAFEL_PKG)@$(FALAFEL_COMMIT)
 
 goimports:
 	@$(call print, "Installing goimports.")
@@ -260,7 +266,7 @@ list:
 
 rpc:
 	@$(call print, "Compiling protos.")
-	cd ./lnrpc; ./gen_protos_docker.sh
+	cd ./lnrpc; ./gen_protos.sh
 
 rpc-format:
 	@$(call print, "Formatting protos.")
@@ -275,9 +281,9 @@ sample-conf-check:
 	@$(call print, "Making sure every flag has an example in the sample-lnd.conf file")
 	for flag in $$(GO_FLAGS_COMPLETION=1 go run -tags="$(RELEASE_TAGS)" $(PKG)/cmd/lnd -- | grep -v help | cut -c3-); do if ! grep -q $$flag sample-lnd.conf; then echo "Command line flag --$$flag not added to sample-lnd.conf"; exit 1; fi; done
 
-mobile-rpc:
+mobile-rpc: falafel goimports
 	@$(call print, "Creating mobile RPC from protos.")
-	cd ./lnrpc; COMPILE_MOBILE=1 ./gen_protos_docker.sh
+	cd ./mobile; ./gen_bindings.sh $(FALAFEL_COMMIT)
 
 vendor:
 	@$(call print, "Re-creating vendor directory.")
@@ -318,6 +324,7 @@ clean-mobile:
 	unit \
 	unit-cover \
 	unit-race \
+	falafel \
 	goveralls \
 	travis-race \
 	travis-cover \

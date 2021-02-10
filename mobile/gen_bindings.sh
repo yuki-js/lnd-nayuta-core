@@ -47,6 +47,7 @@ for file in $PROTOS; do
   echo "Generating mobile protos from ${file}"
 
   protoc -I/usr/local/include -I. \
+         -I$GOPATH/src/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis \
          --plugin=protoc-gen-custom=$falafel\
          --custom_out=./build \
          --custom_opt="$opts" \
@@ -76,6 +77,7 @@ do
     echo "Generating mobile protos from ${file}, with build tag ${tag}"
 
     protoc -I/usr/local/include -I. \
+           -I$GOPATH/src/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis \
            -I../lnrpc \
            --plugin=protoc-gen-custom=$falafel \
            --custom_out=./build \
