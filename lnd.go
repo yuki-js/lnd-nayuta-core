@@ -291,12 +291,24 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 
 	// If we have chosen to start with a dedicated listener for the
 	// rpc server, we set it directly.
+	/**
+	Nayuta Core original change
+	|               | Listener is non-nil     | Listener is nil           |
+	|---------------+-------------------------+---------------------------|
+	| Ready non-nil | passthrough             | fallback lis, given ready |
+	| Ready is nil  | fallback lis, noop chan | fallback lis, noop chan   |
+	*/
 	var grpcListeners []*ListenerWithSignal
-	if lisCfg.RPCListener != nil {
+	if lisCfg.RPCListener != nil && lisCfg.RPCListener.Listener != nil && lisCfg.RPCListener.Ready != nil {
 		grpcListeners = []*ListenerWithSignal{lisCfg.RPCListener}
 	} else {
-		// Otherwise we create listeners from the RPCListeners defined
-		// in the config.
+		// This channels are shared if multiple RPCListeners
+		var ready chan struct{}
+		if lisCfg.RPCListener != nil && lisCfg.RPCListener.Ready != nil {
+			ready = lisCfg.RPCListener.Ready
+		} else {
+			ready = make(chan struct{})
+		}
 		for _, grpcEndpoint := range cfg.RPCListeners {
 			// Start a gRPC server listening for HTTP/2
 			// connections.
@@ -311,7 +323,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 			grpcListeners = append(
 				grpcListeners, &ListenerWithSignal{
 					Listener: lis,
-					Ready:    make(chan struct{}),
+					Ready:    ready,
 				})
 		}
 	}

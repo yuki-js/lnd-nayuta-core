@@ -78,7 +78,7 @@ func Start(extraArgs string, rpcReady Callback) {
 	// the mobile APIs, such that the grpc server will use it.
 	cfg := lnd.ListenerCfg{
 		RPCListener: &lnd.ListenerWithSignal{
-			Listener: lightningLis,
+			Listener: nil,
 			Ready:    rpcListening,
 		},
 	}
@@ -110,14 +110,6 @@ func Start(extraArgs string, rpcReady Callback) {
 			return
 		}
 	}()
-
-	// By default we'll apply the admin auth options, which will include
-	// macaroons.
-	setDefaultDialOption(
-		func() ([]grpc.DialOption, error) {
-			return lnd.AdminAuthOptions(loadedConfig, false)
-		},
-	)
 
 	// For the WalletUnlocker and StateService, the macaroons might not be
 	// available yet when called, so we use a more restricted set of
