@@ -12,7 +12,6 @@ import (
 	flags "github.com/jessevdk/go-flags"
 	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/signal"
-	"google.golang.org/grpc"
 )
 
 // lndStarted will be used atomically to ensure only a singel lnd instance is
@@ -114,21 +113,8 @@ func Start(extraArgs string, rpcReady Callback) {
 			rpcReady.OnError(err)
 			return
 		}
+		rpcReady.OnError(nil) // gracefully stopped
 	}()
-
-	// For the WalletUnlocker and StateService, the macaroons might not be
-	// available yet when called, so we use a more restricted set of
-	// options that don't include them.
-	setWalletUnlockerDialOption(
-		func() ([]grpc.DialOption, error) {
-			return lnd.AdminAuthOptions(loadedConfig, true)
-		},
-	)
-	setStateDialOption(
-		func() ([]grpc.DialOption, error) {
-			return lnd.AdminAuthOptions(loadedConfig, true)
-		},
-	)
 
 	// Finally we start a go routine that will call the provided callback
 	// when the RPC server is ready to accept calls.
