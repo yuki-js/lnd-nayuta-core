@@ -1685,6 +1685,8 @@ func initNeutrinoBackend(cfg *Config, chainDir string,
 		},
 		AssertFilterHeader: headerStateAssertion,
 		BlockCache:         blockCache.Cache,
+		BroadcastTimeout:   cfg.NeutrinoMode.BroadcastTimeout,
+		PersistToDisk:      cfg.NeutrinoMode.PersistFilters,
 	}
 
 	neutrino.MaxPeers = 8
