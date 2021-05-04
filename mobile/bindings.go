@@ -18,6 +18,14 @@ import (
 // attempted to be started at once.
 var lndStarted int32
 
+func isRunning() bool {
+	if lndStarted == 1 {
+		return true
+	} else {
+		return false
+	}
+}
+
 // Start starts lnd in a new goroutine.
 //
 // extraArgs can be used to pass command line arguments to lnd that will
