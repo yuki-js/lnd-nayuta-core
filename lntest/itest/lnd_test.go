@@ -440,8 +440,9 @@ func waitForNumChannelPendingForceClose(ctx context.Context,
 
 		forceCloseChans := resp.PendingForceClosingChannels
 		if len(forceCloseChans) != expectedNum {
-			return fmt.Errorf("bob should have %d pending "+
-				"force close channels but has %d", expectedNum,
+			return fmt.Errorf("%v should have %d pending "+
+				"force close channels but has %d",
+				node.Cfg.Name, expectedNum,
 				len(forceCloseChans))
 		}
 
@@ -1299,11 +1300,14 @@ func testPaymentFollowingChannelOpen(net *lntest.NetworkHarness, t *harnessTest)
 
 	// Send payment to Bob so that a channel update to disk will be
 	// executed.
-	sendAndAssertSuccess(t, net.Alice, &routerrpc.SendPaymentRequest{
-		PaymentRequest: bobPayReqs[0],
-		TimeoutSeconds: 60,
-		FeeLimitSat:    1000000,
-	})
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+	sendAndAssertSuccess(
+		ctxt, t, net.Alice, &routerrpc.SendPaymentRequest{
+			PaymentRequest: bobPayReqs[0],
+			TimeoutSeconds: 60,
+			FeeLimitSat:    1000000,
+		},
+	)
 
 	// At this point we want to make sure the channel is opened and not
 	// pending.
@@ -5215,8 +5219,9 @@ func testListPayments(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// With the invoice for Bob added, send a payment towards Alice paying
 	// to the above generated invoice.
+	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	sendAndAssertSuccess(
-		t, net.Alice,
+		ctxt, t, net.Alice,
 		&routerrpc.SendPaymentRequest{
 			PaymentRequest: invoiceResp.PaymentRequest,
 			TimeoutSeconds: 60,
@@ -9700,16 +9705,24 @@ func assertDLPExecuted(net *lntest.NetworkHarness, t *harnessTest,
 	assertNumPendingChannels(t, carol, 0, 0)
 
 	// Make sure Carol got her balance back.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	carolBalResp, err := carol.WalletBalance(ctxt, balReq)
+	err = wait.NoError(func() error {
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		carolBalResp, err := carol.WalletBalance(ctxt, balReq)
+		if err != nil {
+			return fmt.Errorf("unable to get carol's balance: %v", err)
+		}
+
+		carolBalance := carolBalResp.ConfirmedBalance
+		if carolBalance <= carolStartingBalance {
+			return fmt.Errorf("expected carol to have balance "+
+				"above %d, instead had %v", carolStartingBalance,
+				carolBalance)
+		}
+
+		return nil
+	}, defaultTimeout)
 	if err != nil {
-		t.Fatalf("unable to get carol's balance: %v", err)
-	}
-	carolBalance := carolBalResp.ConfirmedBalance
-	if carolBalance <= carolStartingBalance {
-		t.Fatalf("expected carol to have balance above %d, "+
-			"instead had %v", carolStartingBalance,
-			carolBalance)
+		t.Fatalf(err.Error())
 	}
 
 	assertNodeNumChannels(t, dave, 0)
@@ -13094,7 +13107,8 @@ func testRouteFeeCutoff(net *lntest.NetworkHarness, t *harnessTest) {
 			sendReq.FeeLimitMsat = 1000 * paymentAmt * limit.Percent / 100
 		}
 
-		result := sendAndAssertSuccess(t, net.Alice, sendReq)
+		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
+		result := sendAndAssertSuccess(ctxt, t, net.Alice, sendReq)
 
 		checkRoute(result.Htlcs[0].Route)
 	}
@@ -13883,11 +13897,8 @@ func deriveFundingShim(net *lntest.NetworkHarness, t *harnessTest,
 
 // sendAndAssertSuccess sends the given payment requests and asserts that the
 // payment completes successfully.
-func sendAndAssertSuccess(t *harnessTest, node *lntest.HarnessNode,
+func sendAndAssertSuccess(ctx context.Context, t *harnessTest, node *lntest.HarnessNode,
 	req *routerrpc.SendPaymentRequest) *lnrpc.Payment {
-
-	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
-	defer cancel()
 
 	var result *lnrpc.Payment
 	err := wait.NoError(func() error {

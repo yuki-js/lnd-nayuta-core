@@ -38,6 +38,15 @@ func isRunning() bool {
 // current app directory in order to ensure lnd has the permissions needed to
 // write to it.
 func Start(extraArgs string, rpcReady Callback) {
+	// We only support a single lnd instance at a time (singleton) for now,
+	// so we make sure to return immediately if it has already been
+	// started.
+	if !atomic.CompareAndSwapInt32(&lndStarted, 0, 1) {
+		err := errors.New("lnd already started")
+		rpcReady.OnError(err)
+		return
+	}
+
 	// (Re-)initialize the in-mem gRPC listeners we're going to give to lnd.
 	// This is required each time lnd is started, because when lnd shuts
 	// down, the in-mem listeners are closed.
@@ -65,6 +74,7 @@ func Start(extraArgs string, rpcReady Callback) {
 	// Hook interceptor for os signals.
 	shutdownInterceptor, err := signal.Intercept()
 	if err != nil {
+		atomic.StoreInt32(&lndStarted, 0)
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		rpcReady.OnError(err)
 		return
@@ -74,6 +84,7 @@ func Start(extraArgs string, rpcReady Callback) {
 	// line options. This function will also set up logging properly.
 	loadedConfig, err := lnd.LoadConfig(shutdownInterceptor)
 	if err != nil {
+		atomic.StoreInt32(&lndStarted, 0)
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		rpcReady.OnError(err)
 		return
@@ -93,15 +104,6 @@ func Start(extraArgs string, rpcReady Callback) {
 			Listener: nil,
 			Ready:    rpcListening,
 		},
-	}
-
-	// We only support a single lnd instance at a time (singleton) for now,
-	// so we make sure to return immediately if it has already been
-	// started.
-	if !atomic.CompareAndSwapInt32(&lndStarted, 0, 1) {
-		err := errors.New("lnd already started")
-		rpcReady.OnError(err)
-		return
 	}
 
 	// Call the "real" main in a nested manner so the defers will properly

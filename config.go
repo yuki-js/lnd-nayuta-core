@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"os/user"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -32,6 +31,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch/hodl"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -101,6 +101,10 @@ const (
 	// we'll set this to a lax value since we weren't the ones that
 	// initiated the channel closure.
 	defaultCoopCloseTargetConfs = 6
+
+	// defaultBlockCacheSize is the size (in bytes) of blocks that will be
+	// keep in memory if no size is specified.
+	defaultBlockCacheSize uint64 = 20 * 1024 * 1024 // 20 MB
 
 	// defaultHostSampleInterval is the default amount of time that the
 	// HostAnnouncer will wait between DNS resolutions to check if the
@@ -247,6 +251,8 @@ type Config struct {
 	DisableListen     bool          `long:"nolisten" description:"Disable listening for incoming peer connections"`
 	DisableRest       bool          `long:"norest" description:"Disable REST API"`
 	DisableRestTLS    bool          `long:"no-rest-tls" description:"Disable TLS for REST connections"`
+	WSPingInterval    time.Duration `long:"ws-ping-interval" description:"The ping interval for REST based WebSocket connections, set to 0 to disable sending ping messages from the server side"`
+	WSPongWait        time.Duration `long:"ws-pong-wait" description:"The time we wait for a pong response message on REST based WebSocket connections before the connection is closed as inactive"`
 	NAT               bool          `long:"nat" description:"Toggle NAT traversal support (using either UPnP or NAT-PMP) to automatically advertise your external IP address to the network -- NOTE this does not support devices behind multiple NATs"`
 	MinBackoff        time.Duration `long:"minbackoff" description:"Shortest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
 	MaxBackoff        time.Duration `long:"maxbackoff" description:"Longest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
@@ -273,6 +279,8 @@ type Config struct {
 	Litecoin      *lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
 	LtcdMode      *lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
 	LitecoindMode *lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
+
+	BlockCacheSize uint64 `long:"blockcachesize" description:"The maximum capacity of the block cache"`
 
 	Autopilot *lncfg.AutoPilot `group:"Autopilot" namespace:"autopilot"`
 
@@ -391,6 +399,8 @@ func DefaultConfig() Config {
 		MaxLogFiles:       defaultMaxLogFiles,
 		MaxLogFileSize:    defaultMaxLogFileSize,
 		AcceptorTimeout:   defaultAcceptorTimeout,
+		WSPingInterval:    lnrpc.DefaultPingInterval,
+		WSPongWait:        lnrpc.DefaultPongWait,
 		Bitcoin: &lncfg.Chain{
 			MinHTLCIn:     chainreg.DefaultBitcoinMinHTLCInMSat,
 			MinHTLCOut:    chainreg.DefaultBitcoinMinHTLCOutMSat,
@@ -435,6 +445,7 @@ func DefaultConfig() Config {
 			UserAgentName:    neutrino.UserAgentName,
 			UserAgentVersion: neutrino.UserAgentVersion,
 		},
+		BlockCacheSize:     defaultBlockCacheSize,
 		UnsafeDisconnect:   true,
 		MaxPendingChannels: lncfg.DefaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,
@@ -1642,7 +1653,7 @@ func extractBitcoindRPCParams(networkName string,
 
 	// Next, we'll try to find an auth cookie. We need to detect the chain
 	// by seeing if one is specified in the configuration file.
-	dataDir := path.Dir(bitcoindConfigPath)
+	dataDir := filepath.Dir(bitcoindConfigPath)
 	dataDirRE, err := regexp.Compile(`(?m)^\s*datadir\s*=\s*([^\s]+)`)
 	if err != nil {
 		return "", "", "", "", err
@@ -1652,17 +1663,17 @@ func extractBitcoindRPCParams(networkName string,
 		dataDir = string(dataDirSubmatches[1])
 	}
 
-	chainDir := "/"
+	chainDir := ""
 	switch networkName {
-	case "testnet3":
-		chainDir = "/testnet3/"
-	case "testnet4":
-		chainDir = "/testnet4/"
-	case "regtest":
-		chainDir = "/regtest/"
+	case "mainnet":
+		chainDir = ""
+	case "regtest", "testnet3":
+		chainDir = networkName
+	default:
+		return "", "", "", "", fmt.Errorf("unexpected networkname %v", networkName)
 	}
 
-	cookie, err := ioutil.ReadFile(dataDir + chainDir + ".cookie")
+	cookie, err := ioutil.ReadFile(filepath.Join(dataDir, chainDir, ".cookie"))
 	if err == nil {
 		splitCookie := strings.Split(string(cookie), ":")
 		if len(splitCookie) == 2 {

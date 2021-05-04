@@ -9,7 +9,7 @@ require (
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f
 	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
 	github.com/btcsuite/btcutil/psbt v1.0.3-0.20201208143702-a53e38424cce
-	github.com/btcsuite/btcwallet v0.11.1-0.20210413223001-fe61cc5d7886
+	github.com/btcsuite/btcwallet v0.11.1-0.20210421021904-50978fcf79f8
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.0.1-0.20210329233242-e0607006dce6
 	github.com/btcsuite/btcwallet/wallet/txrules v1.0.0
 	github.com/btcsuite/btcwallet/wallet/txsizes v1.0.1-0.20210329233242-e0607006dce6 // indirect
@@ -47,7 +47,7 @@ require (
 	github.com/juju/utils v0.0.0-20180820210520-bf9cc5bdd62d // indirect
 	github.com/juju/version v0.0.0-20180108022336-b64dbd566305 // indirect
 	github.com/kkdai/bstream v0.0.0-20181106074824-b3251f7901ec
-	github.com/lightninglabs/neutrino v0.11.1-0.20210326011815-f363e0ee1584
+	github.com/lightninglabs/neutrino v0.11.1-0.20210429202752-e6974af1494e
 	github.com/lightninglabs/protobuf-hex-display v1.3.3-0.20191212020323-b444784ce75d
 	github.com/lightningnetwork/lightning-onion v1.0.2-0.20200501022730-3c8c8d0b89ea
 	github.com/lightningnetwork/lnd/cert v1.0.3
@@ -89,4 +89,4 @@ replace github.com/lightningnetwork/lnd/clock => ./clock
 
 replace git.schwanenlied.me/yawning/bsaes.git => github.com/Yawning/bsaes v0.0.0-20180720073208-c0276d75487e
 
-go 1.13
+go 1.15
