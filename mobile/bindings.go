@@ -18,7 +18,7 @@ import (
 // attempted to be started at once.
 var lndStarted int32
 
-func isRunning() bool {
+func IsRunning() bool {
 	if lndStarted == 1 {
 		return true
 	} else {
